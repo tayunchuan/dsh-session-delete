@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Delete",
+    "description": "Adds a red Delete row to every sidebar session menu, with a confirmation dialog."
+  }
+}
