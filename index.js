@@ -4,89 +4,36 @@
  * The Client half owns the sidebar UI. This half owns the one operation the
  * page cannot perform itself: permanently deleting archived Session logs.
  *
- * `POST /plugins/session-delete/purge` accepts
- *   { "dryRun": true }  -> { count, bytes, items }
- *   { "apply": true }   -> deletes archived logs + projection caches, then
- *                          unarchives/detaches every removed Session.
+ * The endpoint is an exact Connection Fetch route under `/api`, so it inherits
+ * Harness's browser-cookie authentication and Host/Origin checks, and the
+ * desktop shell's authenticated transport can reach it over IPC as well.
  *
- * Request policy (the web server has no global auth): loopback Host, matching
- * Origin port, same-origin fetch metadata, JSON content type, and a private
- * header. The route never runs for cross-site form or script requests.
+ *   POST /api/session-delete.purge
+ *   { "dryRun": true }  -> { count, bytes, items }
+ *   { "apply": true }   -> { ok, deleted, failed, freedBytes }
  */
 import { copyFile, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-export const inject = ['webServer', 'workspaceRegistry', 'sessions'];
+export const inject = ['connection', 'workspaceRegistry', 'sessions'];
 
-const ROUTE = '/plugins/session-delete/purge';
+const ROUTE = '/api/session-delete.purge';
 const SESSION_ID = /^session-[A-Za-z0-9-]+$/;
-const MAX_BODY_BYTES = 4096;
 
-function isLoopback(hostname) {
-  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
-}
-
-function portOf(url) {
-  if (url.port !== '') return url.port;
-  return url.protocol === 'https:' ? '443' : '80';
-}
-
-function send(res, status, value) {
-  const body = JSON.stringify(value);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-    'x-content-type-options': 'nosniff',
+function json(value, status = 200) {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    },
   });
-  res.end(body);
-}
-
-function rejectReason(req, serverOrigin) {
-  if (req.method !== 'POST') return 'method';
-  const hostHeader = req.headers.host;
-  if (typeof hostHeader !== 'string') return 'host';
-  let host;
-  try {
-    host = new URL(`http://${hostHeader}`);
-  } catch {
-    return 'host';
-  }
-  if (!isLoopback(host.hostname) || portOf(host) !== portOf(serverOrigin)) return 'host';
-
-  const originHeader = req.headers.origin;
-  if (typeof originHeader !== 'string') return 'origin';
-  let origin;
-  try {
-    origin = new URL(originHeader);
-  } catch {
-    return 'origin';
-  }
-  if (!isLoopback(origin.hostname) || portOf(origin) !== portOf(serverOrigin)) return 'origin';
-
-  const site = req.headers['sec-fetch-site'];
-  if (typeof site === 'string' && site !== 'same-origin') return 'site';
-  const type = req.headers['content-type'];
-  if (typeof type !== 'string' || type.split(';')[0].trim().toLowerCase() !== 'application/json') return 'type';
-  if (req.headers['x-dsh-session-delete'] !== 'purge') return 'header';
-  return null;
 }
 
 function dshHome() {
   return process.env.DSH_HOME || path.join(homedir(), '.dsh');
-}
-
-async function readBody(req) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new Error('request too large');
-    chunks.push(chunk);
-  }
-  if (size === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
 async function readArchivedIds(home) {
@@ -242,32 +189,29 @@ async function purge(ctx, home) {
 export function apply(ctx) {
   const home = dshHome();
 
-  const handler = async (req, res) => {
-    try {
-      const serverOrigin = new URL(ctx.webServer.getOrigin());
-      const reason = rejectReason(req, serverOrigin);
-      if (reason !== null) {
-        send(res, 403, { error: `forbidden (${reason})` });
-        return;
-      }
-      const body = await readBody(req);
-      if (body.dryRun === true) {
-        send(res, 200, await buildPlan(ctx, home));
-        return;
-      }
-      if (body.apply === true) {
-        send(res, 200, { ok: true, ...(await purge(ctx, home)) });
-        return;
-      }
-      send(res, 400, { error: 'expected {"dryRun":true} or {"apply":true}' });
-    } catch (error) {
-      console.warn('session-delete purge failed:', error);
-      send(res, 500, { error: error instanceof Error ? error.message : String(error) });
-    }
-  };
-
-  ctx.effect(
-    () => ctx.webServer.register({ kind: 'exact', path: ROUTE, handler }),
-    'session-delete: purge route',
-  );
+  ctx.effect(() => {
+    const dispose = ctx.connection.fetch.register({
+      path: ROUTE,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: async (request) => {
+        try {
+          const body = await request.json().catch(() => ({}));
+          if (body !== null && typeof body === 'object' && body.dryRun === true) {
+            return json(await buildPlan(ctx, home));
+          }
+          if (body !== null && typeof body === 'object' && body.apply === true) {
+            return json({ ok: true, ...(await purge(ctx, home)) });
+          }
+          return json({ error: 'expected {"dryRun":true} or {"apply":true}' }, 400);
+        } catch (error) {
+          console.warn('session-delete purge failed:', error);
+          return json({ error: error instanceof Error ? error.message : String(error) }, 500);
+        }
+      },
+    });
+    return () => {
+      void dispose();
+    };
+  }, 'session-delete: purge route');
 }

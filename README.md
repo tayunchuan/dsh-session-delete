@@ -46,7 +46,7 @@
 .
 ├── package.json          # bundle 清单（dsh.bundle + dsh.client）
 ├── cordis.patch.yml      # 插入 session-delete 这一行
-├── index.js              # Host 半：清空归档的 HTTP 路由 + 文件删除
+├── index.js              # Host 半：清空归档的 Connection Fetch 路由 + 文件删除
 ├── client.js             # Client 半：菜单项、底部按钮、确认框、样式
 ├── locale/
 │   ├── en.json           # 插件管理器展示用元数据
@@ -60,18 +60,17 @@
 - 底部按钮：`sidebar.footer.action`（`order: 100`）。
 - 确认框：`shell.overlay`，不会被侧边栏或菜单裁剪。
 - 单会话删除：`ctx.uiWorkspace.archiveSession(sessionId, { stopActivity: true })`。
-- 清空归档：Client 调用 `POST /plugins/session-delete/purge`，由 Host 半读取 `workspace.json` 的归档集合，删除 `sessions/<workspace>/<id>` 与 `session_projcache`，再用 `workspaceRegistry.unarchiveSession` / `detachSession` 清理登记。
+- 清空归档：Client 调用 `POST /api/session-delete.purge`（Connection exact Fetch 路由），由 Host 半读取 `workspace.json` 的归档集合，删除 `sessions/<workspace>/<id>` 与 `session_projcache`，再用 `workspaceRegistry.unarchiveSession` / `detachSession` 清理登记。
 
-### 路由安全
+### 请求安全
 
-Harness 的 HTTP 服务器没有全局鉴权，所以该路由自己做请求校验：
+路由注册在 Harness 的 Connection 上（`/api/session-delete.purge`），不是裸 HTTP 路由，因此自动继承 Harness 的浏览器鉴权：
 
-- 只接受 `POST`，Host 必须是回环地址且端口与 `webServer.getOrigin()` 一致；
-- `Origin` 必须是同端口的回环地址，`Sec-Fetch-Site`（存在时）必须是 `same-origin`；
-- `Content-Type: application/json`，并带私有请求头 `x-dsh-session-delete: purge`；
-- 请求体上限 4 KB；跨站表单/脚本请求会在预检或校验阶段被拒绝。
+- Web：`/api` 桥要求已签名的浏览器 Cookie，并执行 Host / Origin / `sec-fetch-site` 检查；未登录返回 401，跨站请求返回 403。
+- 桌面：页面通过 `__DSH_TRANSPORT__.fetch` 走已鉴权的 IPC/HTTP 通道，同样到达该路由。
+- Client 不发送自定义鉴权头，也不接触任何凭据。
 
-该功能依赖 Web GUI（`http://127.0.0.1:...`）。Electron 的 `file://` 界面没有该路由，按钮会提示“仅在 Web 界面可用”。
+Web 与桌面（Electron）界面均可使用；没有 Connection 的部署不会激活该插件。
 
 ## 开发
 

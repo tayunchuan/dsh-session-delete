@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     const OVERLAY_SLOT = 'shell.overlay';
     const MENU_ORDER = 500; // after the shipped rows: pin 100, rename 200, fork 300, archive 400, session-id 450
     const FOOTER_ORDER = 100;
-    const PURGE_ENDPOINT = '/plugins/session-delete/purge';
+    const PURGE_ENDPOINT = 'api/session-delete.purge';
 
     const DICTS = {
       zh: {
@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
         'purge.refresh': '刷新页面',
         'purge.close': '关闭',
         'purge.error': '无法读取归档信息：{message}',
-        'purge.unavailable': '此功能仅在 Web 界面可用。',
+        'purge.unavailable': '无法连接 Host，请刷新页面后重试。',
         'purge.note': '刷新页面后侧边栏才会更新。',
       },
       en: {
@@ -77,7 +77,7 @@ window.__ModuleLoader__.load({
         'purge.refresh': 'Refresh page',
         'purge.close': 'Close',
         'purge.error': 'Could not read archived sessions: {message}',
-        'purge.unavailable': 'This action is available in the web UI only.',
+        'purge.unavailable': 'Could not reach the Host. Refresh the page and try again.',
         'purge.note': 'The sidebar updates after a page refresh.',
       },
     };
@@ -214,15 +214,21 @@ window.__ModuleLoader__.load({
       return `${text} ${units[index]}`;
     }
 
-    async function callPurge(body) {
-      if (typeof fetch !== 'function' || !/^https?:$/.test(window.location.protocol)) {
-        throw new Error('purge-unavailable');
+    function purgeFetch() {
+      const transport = globalThis.__DSH_TRANSPORT__;
+      if (transport !== undefined && typeof transport.fetch === 'function') {
+        return transport.fetch.bind(transport);
       }
-      const response = await fetch(PURGE_ENDPOINT, {
+      if (typeof fetch === 'function') return fetch;
+      throw new Error('purge-unavailable');
+    }
+
+    async function callPurge(body) {
+      const send = purgeFetch();
+      const response = await send(PURGE_ENDPOINT, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-dsh-session-delete': 'purge',
         },
         body: JSON.stringify(body),
       });
@@ -494,34 +500,30 @@ window.__ModuleLoader__.load({
           ),
           h('button', { key: 'close', type: 'button', className: 'dsd-btn dsd-btn-outline', onClick: close }, t('purge.close')),
         );
-      } else {
+      } else if (count > 0 && error === null) {
         actions.push(
           h('button', { key: 'cancel', type: 'button', className: 'dsd-btn dsd-btn-outline', disabled: busy, onClick: close }, t('dialog.cancel')),
+          h(
+            'button',
+            {
+              key: 'confirm',
+              ref: actionRef,
+              type: 'button',
+              className: 'dsd-btn dsd-btn-danger',
+              disabled: busy,
+              onClick: confirm,
+            },
+            busy ? t('purge.busy') : t('purge.confirm'),
+          ),
         );
-        if (count > 0 && error === null) {
-          actions.push(
-            h(
-              'button',
-              {
-                key: 'confirm',
-                ref: actionRef,
-                type: 'button',
-                className: 'dsd-btn dsd-btn-danger',
-                disabled: busy,
-                onClick: confirm,
-              },
-              busy ? t('purge.busy') : t('purge.confirm'),
-            ),
-          );
-        } else {
-          actions.push(
-            h(
-              'button',
-              { key: 'close', ref: actionRef, type: 'button', className: 'dsd-btn dsd-btn-outline', onClick: close },
-              t('purge.close'),
-            ),
-          );
-        }
+      } else {
+        actions.push(
+          h(
+            'button',
+            { key: 'close', ref: actionRef, type: 'button', className: 'dsd-btn dsd-btn-outline', onClick: close },
+            t('purge.close'),
+          ),
+        );
       }
 
       return h(
