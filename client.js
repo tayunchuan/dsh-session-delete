@@ -1,16 +1,17 @@
 /**
  * Client half of the `dsh-session-delete` bundle.
  *
- * Registers two entries:
+ * Registers three entries:
  *   1. `sidebar.workspaces.session.menu.item` – the red "删除 / Delete" row
  *      rendered with the same trash-outline + label language as the DeepSeek
  *      web sidebar menu.
- *   2. `shell.overlay` – one confirmation dialog above every column, so the
- *      destructive step is explicit and the row menu can close first.
+ *   2. `sidebar.footer.action` – a trash button at the sidebar foot that opens
+ *      the "清空归档 / Purge archived" confirmation.
+ *   3. `shell.overlay` – the confirmation dialogs above every column.
  *
- * The actual removal uses the host's public `uiWorkspace.archiveSession`
- * operation: the session leaves the sidebar immediately and can be restored
- * from the "All conversations (show archived)" filter.
+ * Single-session removal uses the host's public `uiWorkspace.archiveSession`
+ * operation. Purging archived sessions permanently deletes their logs through
+ * this package's Host half (the Client cannot touch files itself).
  */
 window.__ModuleLoader__.load({
   id: 'dsh-session-delete',
@@ -20,8 +21,11 @@ window.__ModuleLoader__.load({
 
     const NS = 'session-delete';
     const MENU_SLOT = 'sidebar.workspaces.session.menu.item';
+    const FOOTER_SLOT = 'sidebar.footer.action';
     const OVERLAY_SLOT = 'shell.overlay';
     const MENU_ORDER = 500; // after the shipped rows: pin 100, rename 200, fork 300, archive 400, session-id 450
+    const FOOTER_ORDER = 100;
+    const PURGE_ENDPOINT = '/plugins/session-delete/purge';
 
     const DICTS = {
       zh: {
@@ -33,6 +37,22 @@ window.__ModuleLoader__.load({
         'dialog.cancel': '取消',
         'dialog.confirm': '删除',
         'dialog.busy': '正在删除…',
+        'purge.label': '清空归档',
+        'purge.aria': '清空已归档会话',
+        'purge.title': '清空已归档会话',
+        'purge.description':
+          '将永久删除 {n} 个已归档会话，共 {size}。日志和投影缓存会从磁盘删除，不可恢复；附件可能残留。',
+        'purge.empty': '当前没有已归档会话。',
+        'purge.listLabel': '将被删除的会话',
+        'purge.confirm': '永久删除',
+        'purge.busy': '正在删除…',
+        'purge.done': '已删除 {n} 个会话，释放 {size}。',
+        'purge.failed': '{n} 个会话删除失败：{ids}',
+        'purge.refresh': '刷新页面',
+        'purge.close': '关闭',
+        'purge.error': '无法读取归档信息：{message}',
+        'purge.unavailable': '此功能仅在 Web 界面可用。',
+        'purge.note': '刷新页面后侧边栏才会更新。',
       },
       en: {
         'menu.delete': 'Delete',
@@ -43,6 +63,22 @@ window.__ModuleLoader__.load({
         'dialog.cancel': 'Cancel',
         'dialog.confirm': 'Delete',
         'dialog.busy': 'Deleting…',
+        'purge.label': 'Purge archived',
+        'purge.aria': 'Purge archived sessions',
+        'purge.title': 'Purge archived sessions',
+        'purge.description':
+          'Permanently delete {n} archived session(s), {size} in total. Logs and projection caches are removed from disk and cannot be restored; attachments may remain.',
+        'purge.empty': 'There are no archived sessions.',
+        'purge.listLabel': 'Sessions to delete',
+        'purge.confirm': 'Delete permanently',
+        'purge.busy': 'Deleting…',
+        'purge.done': 'Deleted {n} session(s), freed {size}.',
+        'purge.failed': '{n} session(s) failed to delete: {ids}',
+        'purge.refresh': 'Refresh page',
+        'purge.close': 'Close',
+        'purge.error': 'Could not read archived sessions: {message}',
+        'purge.unavailable': 'This action is available in the web UI only.',
+        'purge.note': 'The sidebar updates after a page refresh.',
       },
     };
 
@@ -60,9 +96,18 @@ window.__ModuleLoader__.load({
       '.dsd-menu-icon svg{display:block}',
       '.dsd-menu-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 
+      '.dsd-footer{width:28px;height:28px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;',
+      'padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary, #6b7280);',
+      'cursor:pointer;outline:none;flex:none}',
+      '.dsd-footer:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.06));',
+      'color:var(--dsw-alias-state-error-primary, #e5484d)}',
+      '.dsd-footer:focus-visible{outline:2px solid var(--dsw-alias-brand-primary, #4d6bfe);outline-offset:-2px}',
+      '.dsd-footer[disabled]{opacity:.5;cursor:default}',
+      '.dsd-footer svg{display:block}',
+
       '.dsd-overlay{position:fixed;inset:0;z-index:1200;display:flex;align-items:center;justify-content:center;',
       'padding:24px;background:rgba(15,15,18,.42);pointer-events:auto;animation:dsd-fade-in .12s ease-out}',
-      '.dsd-dialog{width:min(420px,100%);box-sizing:border-box;padding:20px;border-radius:12px;',
+      '.dsd-dialog{width:min(460px,100%);box-sizing:border-box;padding:20px;border-radius:12px;',
       'background:var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-1, #fff));color:var(--dsw-alias-label-primary, #1f2329);',
       'border:1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08));',
       'box-shadow:0 24px 64px rgba(0,0,0,.24);animation:dsd-pop-in .14s ease-out}',
@@ -70,6 +115,14 @@ window.__ModuleLoader__.load({
       '.dsd-dialog-desc{margin:8px 0 0;font-size:14px;line-height:22px;color:var(--dsw-alias-label-secondary, #6b7280);',
       'white-space:pre-wrap;overflow-wrap:anywhere}',
       '.dsd-dialog-error{margin:12px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary, #e5484d)}',
+      '.dsd-dialog-note{margin:10px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary, #6b7280)}',
+      '.dsd-dialog-list{list-style:none;margin:12px 0 0;padding:0;max-height:180px;overflow:auto;',
+      'border:1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08));border-radius:8px}',
+      '.dsd-dialog-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;',
+      'padding:6px 10px;font-size:13px;line-height:20px}',
+      '.dsd-dialog-list li+li{border-top:1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))}',
+      '.dsd-dialog-list-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dsd-dialog-list-size{flex:none;color:var(--dsw-alias-label-secondary, #6b7280);font-variant-numeric:tabular-nums}',
       '.dsd-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}',
       '.dsd-btn{height:32px;box-sizing:border-box;padding:0 14px;border-radius:8px;font:inherit;font-size:14px;',
       'line-height:20px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}',
@@ -111,7 +164,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** A tiny observable for the pending delete request; the dialog is mounted from it. */
+    /** A tiny observable for the pending dialog request. */
     function createSnapshotStore(initial) {
       let value = initial;
       const listeners = new Set();
@@ -147,85 +200,65 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** The menu row: one red button with the trash icon and the label. */
-    function DeleteSessionMenuItem({ sessionId, displayTitle, useMenuOpenState, useArchived, openDeleteDialog, t }) {
-      const [, setMenuOpen] = useMenuOpenState();
-      const archived = useArchived((set) => set.has(sessionId));
-      if (archived) return null;
-      const title = displayTitle || sessionId;
-      return h(
-        'button',
-        {
-          type: 'button',
-          role: 'menuitem',
-          className: 'dsd-menu-item',
-          'data-dsh-session-delete': '',
-          'aria-label': t('menu.aria', { title }),
-          onClick: (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setMenuOpen(false);
-            openDeleteDialog({ sessionId, title });
-          },
+    function formatSize(bytes) {
+      const value = Number(bytes);
+      if (!Number.isFinite(value) || value <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let amount = value;
+      let index = 0;
+      while (amount >= 1024 && index < units.length - 1) {
+        amount /= 1024;
+        index += 1;
+      }
+      const text = index === 0 || amount >= 10 ? String(Math.round(amount)) : amount.toFixed(1);
+      return `${text} ${units[index]}`;
+    }
+
+    async function callPurge(body) {
+      if (typeof fetch !== 'function' || !/^https?:$/.test(window.location.protocol)) {
+        throw new Error('purge-unavailable');
+      }
+      const response = await fetch(PURGE_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-dsh-session-delete': 'purge',
         },
-        h('span', { key: 'icon', className: 'dsd-menu-icon', 'aria-hidden': 'true' }, h(TrashIcon, { size: 16 })),
-        h('span', { key: 'label', className: 'dsd-menu-label' }, t('menu.delete')),
-      );
+        body: JSON.stringify(body),
+      });
+      let data = {};
+      try {
+        data = await response.json();
+      } catch {
+        /* a non-JSON failure keeps the status text below */
+      }
+      if (!response.ok) {
+        throw new Error(data && data.error ? data.error : `HTTP ${response.status}`);
+      }
+      return data;
     }
 
-    /**
-     * Overlay entry: carries the stylesheet for the whole plugin and mounts one
-     * dialog per pending request. The style element lives here (not inside the
-     * menu button) so it is valid markup and present before the menu opens.
-     */
-    function DeleteSessionDialog({ usePending, deleteSession, settleDelete, t }) {
-      const request = usePending((current) => current);
-      return h(
-        React.Fragment,
-        null,
-        h('style', { key: 'style' }, CSS),
-        request === null
-          ? null
-          : h(DeleteSessionConfirm, {
-              key: String(request.seq),
-              request,
-              deleteSession,
-              settleDelete,
-              t,
-            }),
-      );
+    function messageOf(error, t) {
+      if (error instanceof Error && error.message === 'purge-unavailable') return t('purge.unavailable');
+      return error instanceof Error ? error.message : String(error);
     }
 
-    /** One request's dialog: busy and error state die with its key. */
-    function DeleteSessionConfirm({ request, deleteSession, settleDelete, t }) {
-      const [busy, setBusy] = React.useState(false);
-      const [error, setError] = React.useState(null);
-      const busyRef = React.useRef(false);
-      const confirmRef = React.useRef(null);
+    /** Shared modal focus, Escape, and Tab cycle for both dialogs. */
+    function useModalFocus(initialFocusRef, onClose, busyRef) {
       const dialogRef = React.useRef(null);
       const previousFocus = React.useRef(null);
-      const settleRef = React.useRef(settleDelete);
-      const deleteRef = React.useRef(deleteSession);
-      busyRef.current = busy;
-      settleRef.current = settleDelete;
-      deleteRef.current = deleteSession;
-
-      const close = React.useCallback(() => {
-        if (busyRef.current) return;
-        settleRef.current();
-      }, []);
-
+      const closeRef = React.useRef(onClose);
+      closeRef.current = onClose;
       React.useEffect(() => {
         previousFocus.current = document.activeElement;
-        const confirm = confirmRef.current;
-        if (confirm !== null && typeof confirm.focus === 'function') confirm.focus();
-
+        const target = initialFocusRef.current;
+        if (target !== null && typeof target.focus === 'function') target.focus();
         const onKeyDown = (event) => {
           if (event.key === 'Escape') {
             if (busyRef.current) return;
             event.preventDefault();
             event.stopPropagation();
-            settleRef.current();
+            closeRef.current();
             return;
           }
           if (event.key !== 'Tab') return;
@@ -244,7 +277,6 @@ window.__ModuleLoader__.load({
             first.focus();
           }
         };
-
         document.addEventListener('keydown', onKeyDown, true);
         return () => {
           document.removeEventListener('keydown', onKeyDown, true);
@@ -252,6 +284,91 @@ window.__ModuleLoader__.load({
           if (previous !== null && typeof previous.focus === 'function') previous.focus();
         };
       }, []);
+      return dialogRef;
+    }
+
+    /** The menu row: one red button with the trash icon and the label. */
+    function DeleteSessionMenuItem({ sessionId, displayTitle, useMenuOpenState, useArchived, openDeleteDialog, t }) {
+      const [, setMenuOpen] = useMenuOpenState();
+      const archived = useArchived((set) => set.has(sessionId));
+      if (archived) return null;
+      const title = displayTitle || sessionId;
+      return h(
+        'button',
+        {
+          type: 'button',
+          role: 'menuitem',
+          className: 'dsd-menu-item',
+          'data-dsh-session-delete': 'menu',
+          'aria-label': t('menu.aria', { title }),
+          onClick: (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setMenuOpen(false);
+            openDeleteDialog({ sessionId, title });
+          },
+        },
+        h('span', { key: 'icon', className: 'dsd-menu-icon', 'aria-hidden': 'true' }, h(TrashIcon, { size: 16 })),
+        h('span', { key: 'label', className: 'dsd-menu-label' }, t('menu.delete')),
+      );
+    }
+
+    /** Sidebar-foot action: asks the Host for the archive plan, then opens the dialog. */
+    function PurgeFooterAction({ openPurgeDialog, t }) {
+      const [busy, setBusy] = React.useState(false);
+      const click = () => {
+        if (busy) return;
+        setBusy(true);
+        callPurge({ dryRun: true })
+          .then((plan) => openPurgeDialog({ plan }))
+          .catch((error) => openPurgeDialog({ error }))
+          .finally(() => setBusy(false));
+      };
+      return h(
+        'button',
+        {
+          type: 'button',
+          className: 'dsd-footer',
+          title: t('purge.aria'),
+          'aria-label': t('purge.aria'),
+          'data-dsh-session-delete': 'purge',
+          disabled: busy,
+          onClick: click,
+        },
+        h(TrashIcon, { size: 16 }),
+      );
+    }
+
+    /** Overlay entry: carries the stylesheet and dispatches one dialog per request. */
+    function DeleteSessionDialog({ usePending, deleteSession, settleDelete, t }) {
+      const request = usePending((current) => current);
+      let content = null;
+      if (request !== null) {
+        content =
+          request.mode === 'purge'
+            ? h(PurgeConfirm, { key: `p${request.seq}`, request, settleDelete, t })
+            : h(DeleteSessionConfirm, { key: `s${request.seq}`, request, deleteSession, settleDelete, t });
+      }
+      return h(React.Fragment, null, h('style', { key: 'style' }, CSS), content);
+    }
+
+    /** One session's delete confirmation. */
+    function DeleteSessionConfirm({ request, deleteSession, settleDelete, t }) {
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState(null);
+      const busyRef = React.useRef(false);
+      const confirmRef = React.useRef(null);
+      const settleRef = React.useRef(settleDelete);
+      const deleteRef = React.useRef(deleteSession);
+      busyRef.current = busy;
+      settleRef.current = settleDelete;
+      deleteRef.current = deleteSession;
+
+      const close = React.useCallback(() => {
+        if (busyRef.current) return;
+        settleRef.current();
+      }, []);
+      const dialogRef = useModalFocus(confirmRef, close, busyRef);
 
       const confirm = () => {
         if (busyRef.current) return;
@@ -259,17 +376,12 @@ window.__ModuleLoader__.load({
         setError(null);
         Promise.resolve()
           .then(() => deleteRef.current(request.sessionId))
-          .then(() => {
-            settleRef.current();
-          })
+          .then(() => settleRef.current())
           .catch((reason) => {
             setBusy(false);
             setError(reason instanceof Error ? reason.message : String(reason));
           });
       };
-
-      const titleId = 'dsh-session-delete-title';
-      const descId = 'dsh-session-delete-desc';
 
       return h(
         'div',
@@ -282,37 +394,27 @@ window.__ModuleLoader__.load({
         h(
           'div',
           {
-            key: 'dialog',
             ref: dialogRef,
             className: 'dsd-dialog',
             role: 'dialog',
             'aria-modal': 'true',
-            'aria-labelledby': titleId,
-            'aria-describedby': descId,
+            'aria-labelledby': 'dsd-session-title',
+            'aria-describedby': 'dsd-session-desc',
           },
-          h('h2', { key: 'title', id: titleId, className: 'dsd-dialog-title' }, t('dialog.title')),
-          h('p', { key: 'desc', id: descId, className: 'dsd-dialog-desc' }, t('dialog.description', { title: request.title })),
-          error === null
-            ? null
-            : h('p', { key: 'error', className: 'dsd-dialog-error', role: 'alert' }, error),
+          h('h2', { id: 'dsd-session-title', className: 'dsd-dialog-title' }, t('dialog.title')),
+          h('p', { id: 'dsd-session-desc', className: 'dsd-dialog-desc' }, t('dialog.description', { title: request.title })),
+          error === null ? null : h('p', { className: 'dsd-dialog-error', role: 'alert' }, error),
           h(
             'div',
-            { key: 'actions', className: 'dsd-dialog-actions' },
+            { className: 'dsd-dialog-actions' },
             h(
               'button',
-              {
-                key: 'cancel',
-                type: 'button',
-                className: 'dsd-btn dsd-btn-outline',
-                disabled: busy,
-                onClick: close,
-              },
+              { type: 'button', className: 'dsd-btn dsd-btn-outline', disabled: busy, onClick: close },
               t('dialog.cancel'),
             ),
             h(
               'button',
               {
-                key: 'confirm',
                 ref: confirmRef,
                 type: 'button',
                 className: 'dsd-btn dsd-btn-danger',
@@ -322,6 +424,149 @@ window.__ModuleLoader__.load({
               busy ? t('dialog.busy') : t('dialog.confirm'),
             ),
           ),
+        ),
+      );
+    }
+
+    /** Purge confirmation: plan first, then the irreversible apply. */
+    function PurgeConfirm({ request, settleDelete, t }) {
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState(request.error === null || request.error === undefined ? null : messageOf(request.error, t));
+      const [result, setResult] = React.useState(null);
+      const busyRef = React.useRef(false);
+      const settleRef = React.useRef(settleDelete);
+      const actionRef = React.useRef(null);
+      busyRef.current = busy;
+      settleRef.current = settleDelete;
+
+      const close = React.useCallback(() => {
+        if (busyRef.current) return;
+        settleRef.current();
+      }, []);
+      const dialogRef = useModalFocus(actionRef, close, busyRef);
+
+      const plan = request.plan;
+      const count = plan === null || plan === undefined ? 0 : Number(plan.count) || 0;
+      const bytes = plan === null || plan === undefined ? 0 : Number(plan.bytes) || 0;
+      const failed = result !== null && Array.isArray(result.failed) ? result.failed : [];
+      const deleted = result !== null && Array.isArray(result.deleted) ? result.deleted : [];
+      const canDelete = error === null && result === null && plan !== null && plan !== undefined && count > 0;
+
+      const confirm = () => {
+        if (busyRef.current || !canDelete) return;
+        setBusy(true);
+        setError(null);
+        callPurge({ apply: true })
+          .then((data) => {
+            setBusy(false);
+            setResult(data);
+          })
+          .catch((reason) => {
+            setBusy(false);
+            setError(messageOf(reason, t));
+          });
+      };
+
+      let description;
+      if (result !== null) {
+        description = t('purge.done', { n: deleted.length, size: formatSize(result.freedBytes) });
+      } else if (error !== null) {
+        description = t('purge.error', { message: error });
+      } else if (count === 0) {
+        description = t('purge.empty');
+      } else {
+        description = t('purge.description', { n: count, size: formatSize(bytes) });
+      }
+
+      const actions = [];
+      if (result !== null) {
+        actions.push(
+          h(
+            'button',
+            {
+              key: 'refresh',
+              ref: actionRef,
+              type: 'button',
+              className: 'dsd-btn dsd-btn-danger',
+              onClick: () => window.location.reload(),
+            },
+            t('purge.refresh'),
+          ),
+          h('button', { key: 'close', type: 'button', className: 'dsd-btn dsd-btn-outline', onClick: close }, t('purge.close')),
+        );
+      } else {
+        actions.push(
+          h('button', { key: 'cancel', type: 'button', className: 'dsd-btn dsd-btn-outline', disabled: busy, onClick: close }, t('dialog.cancel')),
+        );
+        if (count > 0 && error === null) {
+          actions.push(
+            h(
+              'button',
+              {
+                key: 'confirm',
+                ref: actionRef,
+                type: 'button',
+                className: 'dsd-btn dsd-btn-danger',
+                disabled: busy,
+                onClick: confirm,
+              },
+              busy ? t('purge.busy') : t('purge.confirm'),
+            ),
+          );
+        } else {
+          actions.push(
+            h(
+              'button',
+              { key: 'close', ref: actionRef, type: 'button', className: 'dsd-btn dsd-btn-outline', onClick: close },
+              t('purge.close'),
+            ),
+          );
+        }
+      }
+
+      return h(
+        'div',
+        {
+          className: 'dsd-overlay',
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget) close();
+          },
+        },
+        h(
+          'div',
+          {
+            ref: dialogRef,
+            className: 'dsd-dialog',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'dsd-purge-title',
+            'aria-describedby': 'dsd-purge-desc',
+          },
+          h('h2', { id: 'dsd-purge-title', className: 'dsd-dialog-title' }, t('purge.title')),
+          h('p', { id: 'dsd-purge-desc', className: 'dsd-dialog-desc' }, description),
+          count > 0 && result === null && error === null
+            ? h(
+                'ul',
+                { className: 'dsd-dialog-list', 'aria-label': t('purge.listLabel') },
+                (plan.items || []).map((item) =>
+                  h(
+                    'li',
+                    { key: item.id },
+                    h('span', { className: 'dsd-dialog-list-title' }, item.title || item.id),
+                    h('span', { className: 'dsd-dialog-list-size' }, formatSize(item.bytes)),
+                  ),
+                ),
+              )
+            : null,
+          result !== null && failed.length > 0
+            ? h(
+                'p',
+                { className: 'dsd-dialog-error', role: 'alert' },
+                t('purge.failed', { n: failed.length, ids: failed.map((item) => item.id).join(', ') }),
+              )
+            : null,
+          result !== null ? h('p', { className: 'dsd-dialog-note' }, t('purge.note')) : null,
+          h('div', { className: 'dsd-dialog-actions' }, actions),
         ),
       );
     }
@@ -340,9 +585,13 @@ window.__ModuleLoader__.load({
         const pending = createSnapshotStore(null);
         let seq = 0;
 
-        const openDeleteDialog = (request) => {
+        const openDeleteDialog = ({ sessionId, title }) => {
           seq += 1;
-          pending.set({ ...request, seq });
+          pending.set({ mode: 'session', sessionId, title, seq });
+        };
+        const openPurgeDialog = ({ plan, error }) => {
+          seq += 1;
+          pending.set({ mode: 'purge', plan: plan ?? null, error: error ?? null, seq });
         };
         const settleDelete = () => {
           pending.set(null);
@@ -362,6 +611,19 @@ window.__ModuleLoader__.load({
               }),
             },
             DeleteSessionMenuItem,
+          ),
+        );
+
+        ctx.slots.inject(FOOTER_SLOT, () =>
+          ctx.slots.register(
+            {
+              name: FOOTER_SLOT,
+              id: 'session-delete.purge',
+              order: FOOTER_ORDER,
+              locale: NS,
+              inject: () => ({ openPurgeDialog }),
+            },
+            PurgeFooterAction,
           ),
         );
 

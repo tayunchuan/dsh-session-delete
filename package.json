@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-delete",
-  "version": "0.1.0",
-  "description": "DeepSeek Harness plugin: a DeepSeek-web-style red Delete row in the sidebar session menu.",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness plugin: a DeepSeek-web-style red Delete row in the sidebar session menu, plus a purge-archived action.",
   "license": "MIT",
   "type": "module",
   "private": true,
@@ -25,7 +25,9 @@
     "dsh",
     "dsh-plugin",
     "session",
-    "delete"
+    "delete",
+    "archive",
+    "purge"
   ],
   "dsh": {
     "bundle": {
